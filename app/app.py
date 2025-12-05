@@ -60,7 +60,7 @@ class DiaryReq(BaseModel):
 
 
 class CommentReq(BaseModel):
-    userId: Optional[int] = 0
+    userId: int
     content: Optional[str] = None
 
 
@@ -144,7 +144,7 @@ def diary(req: DiaryReq):
         content = (parts.get("body") or "").strip()
 
         # 3) "본문(content)"만 기반으로 감정 추론
-        emotion = sess.infer_mood_from_diary(content)
+        emotion = sess._infer_mood_from_text(content)
 
         return ok({"title": title, "content": content, "emotion": emotion})
     except Exception as e:
@@ -194,7 +194,7 @@ def comment(req: CommentReq):
     - content가 없으면 세션에 저장된 마지막 일기(self.diary_content)를 사용
     """
     try:
-        sess = get_session(req.userId or 0)
+        sess = get_session(req.userId)
         if req.content is not None:
             setattr(sess, "diary_content", req.content)
         out = sess.generate_comment()
