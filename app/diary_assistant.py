@@ -1,10 +1,17 @@
 # diary_assistant.py
 import os, re, json, random
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from google import genai
-from google.genai import types
+import logging
+
+logger = logging.getLogger(__name__)
 
 MODEL_NAME = "gemini-2.5-flash-lite"
+
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    raise RuntimeError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
+GENAI_CLIENT = genai.Client(api_key=API_KEY)
 
 SYSTEM_INSTRUCTION = (
     "당신은 초등학생의 눈높이에 맞춰 대화하는 친절한 AI 친구 '다이어리 봇'입니다.\n"
@@ -37,11 +44,8 @@ class TextDiaryAssistant:
     # 초기화
     # =======================
     def __init__(self):
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
-        self.client = genai.Client(api_key=api_key)
-        self.chat_history: List[List[str]] = []
+        self.client = GENAI_CLIENT
+        self.chat_history: List[Tuple[str, str]] = []
         self.diary_content: str = ""
         self.slots: Dict[str, Optional[str]] = {k: None for k in self.slot_order}
         self.pending_confirm: bool = False
@@ -76,10 +80,13 @@ class TextDiaryAssistant:
             raw = (res.text or "").strip()
             s, e = raw.find("{"), raw.rfind("}")
             if s != -1 and e != -1 and e > s:
-                obj = json.loads(raw[s:e+1])
-                return {k: (obj.get(k) or None) for k in self.slot_order}
-        except Exception:
-            pass
+                try:
+                    obj = json.loads(raw[s:e+1])
+                    return {k: (obj.get(k) or None) for k in self.slot_order}
+                except json.JSONDecodeError:
+                    logger.warning("Slot JSON decode failed: %s", raw)
+        except Exception as e:
+            logger.error("Slot extraction failed: %s", e)
         return {}
 
     def _all_ready(self) -> bool:
@@ -141,16 +148,46 @@ class TextDiaryAssistant:
         focus_slot = self._choose_focus_slot(missing)
         last_ai = self.chat_history[-1][1] if self.chat_history else ""
 
-        guidance = "\n".join([
-            "ready_to_write가 true이고 min_turns_met이 true일 때만, 자연스럽게 일기 쓰자고 제안해.",
-            "그 외에는 부족한 focus_slot 하나만 자연스럽게 물어봐.",
-            "질문은 자연스러운 구어체 반말 한 문장, 고정 문형 금지.",
-            "이전 턴 질문과 같은 서두/끝어미 반복 금지.",
-            "이모지 사용 금지.",
-        ])
+        # 상태 모드 결정
+        if ready and min_turns_met:
+            mode = "OFFER_DIARY"
+        elif not ready:
+            mode = "ASK_SLOT"
+        else:
+            # 슬롯은 다 찼지만 min_turns는 아직 안 됨
+            mode = "DEEPEN_DETAIL"
+
+        if mode == "OFFER_DIARY":
+            guidance = (
+                "지금은 일기를 쓸 준비가 모두 끝난 상태야.\n"
+                "공감 1문장 후, 자연스럽게 '이제 이 이야기로 일기를 써보자'는 제안을 한 문장으로 해.\n"
+                "누가/언제/어디서/무엇을 같은 기본 정보는 다시 묻지 마.\n"
+            )
+        elif mode == "ASK_SLOT":
+            guidance = (
+                "아직 채워지지 않은 정보가 있어.\n"
+                "공감 1문장 후, 부족한 정보 중 하나(focus_slot)에 대해서만 자연스럽게 한 문장으로 물어봐.\n"
+                "이미 채워진 정보는 다시 묻지 마.\n"
+            )
+        else:  # DEEPEN_DETAIL
+            guidance = (
+                "일기를 쓰기에 필요한 기본 정보는 이미 충분해.\n"
+                "공감 1문장 후, 아이의 느낌이나 기억에 남는 장면 한 가지 등 '부가적인 내용'을 편하게 더 말하게 유도해.\n"
+                "누가/언제/어디서/무엇을 같은 기본 정보는 다시 묻지 마.\n"
+            )
+
+        # 공통 스타일 규칙 추가
+        guidance += (
+            "질문은 자연스러운 구어체 반말 한 문장, 고정 문형 금지.\n"
+            "이전 턴 질문과 같은 서두/끝어미 반복 금지.\n"
+            "이전 AI 질문 문장을 그대로 반복하지 마시오.\n"
+            "같은 의미의 질문을 하더라도, 표현과 어휘를 반드시 다르게 바꾸시오.\n"
+            "이모지 사용 금지.\n"
+        )
 
         prompt = (
             f"{SYSTEM_INSTRUCTION}\n\n"
+            f"mode: {mode}\n"
             f"지금까지의 대화:\n{self._history_text()}\n\n"
             f"마지막 아이의 말: {user_text}\n\n"
             f"수집된 정보(누구/언제/어디/무엇): {json.dumps(self.slots, ensure_ascii=False)}\n"
@@ -166,7 +203,7 @@ class TextDiaryAssistant:
         try:
             res = self.client.models.generate_content(model=MODEL_NAME, contents=prompt)
             ai = (res.text or "").strip()
-            self.pending_confirm = bool(ready and min_turns_met)
+            self.pending_confirm = (mode == "OFFER_DIARY")
             self.chat_history.append((user_text, ai))
             return ai
         except Exception:
