@@ -8,13 +8,8 @@ from pydantic import BaseModel
 
 #from diffusers import AutoPipelineForText2Image
 from diffusers import AutoPipelineForText2Image, DEISMultistepScheduler
-from diffusers.pipelines.stable_diffusion import StableDiffusionSafetyChecker
 
-
-from transformers import AutoFeatureExtractor
-import numpy as np       
 import boto3
-from PIL import ImageFilter
 
 # 환경 변수
 #MODEL_ID = "sd-legacy/stable-diffusion-v1-5"
@@ -64,24 +59,6 @@ pipe.scheduler = DEISMultistepScheduler.from_config(pipe.scheduler.config)
 pipe = pipe.to(device)
 pipe.vae.enable_slicing()
 pipe.enable_vae_tiling()
-
-# Safety Checker 로드
-safety_checker = StableDiffusionSafetyChecker.from_pretrained(
-    "CompVis/stable-diffusion-safety-checker"
-)
-feature_extractor = AutoFeatureExtractor.from_pretrained(
-    "CompVis/stable-diffusion-safety-checker"
-)
-
-def is_nsfw_image(image) -> bool:
-    # 생성된 PIL 이미지가 NSFW인지 여부를 판단
-    safety_input = feature_extractor(images=[image], return_tensors="pt")
-    # safety_checker는 numpy 이미지 리스트와 clip_input을 같이 받는다
-    _, has_nsfw_concept = safety_checker(
-        images=[np.array(image)],
-        clip_input=safety_input["pixel_values"],
-    )
-    return bool(has_nsfw_concept[0])
 
 
 # LoRA 3종 미리 로드 → 요청마다 set_adapters로 전환
@@ -159,11 +136,6 @@ def _generate_and_upload(diary_text: str, lora_choice: str = DEFAULT_LORA) -> di
             guidance_scale=7.5,
             num_inference_steps=50,
         ).images[0]
-        
-    # 5-1) NSFW Safety Checker 통과
-    if is_nsfw_image(image):
-        # NSFW로 판단되면 이미지에 강한 블러를 적용
-        image = image.filter(ImageFilter.GaussianBlur(radius=32))
 
     # 6) PNG 바이트화
     buf = io.BytesIO()
