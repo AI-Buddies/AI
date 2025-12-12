@@ -238,24 +238,109 @@ class TextDiaryAssistant:
             return ai
 
     # =========================
+    # 제목/본문 클린업 유틸
+    # =========================
+    def _clean_title(self, raw: str) -> str:
+        """
+        LLM이 출력한 제목에서 '제목: ' 같은 라벨이나 대괄호를 제거하고,
+        한 줄짜리 순수 제목만 남긴다.
+        """
+        t = (raw or "").strip()
+        if not t:
+            return "오늘의 이야기"
+
+        # "제목: ", "Title: " 같은 접두어 제거
+        t = re.sub(r"^(제목|title)\s*[:：\-\]]\s*", "", t, flags=re.IGNORECASE)
+
+        # 대괄호로 둘러싸여 있으면 제거: [신나는 축구 데이!] -> 신나는 축구 데이!
+        m = re.match(r"^\[(.+)\]$", t)
+        if m:
+            t = m.group(1).strip()
+
+        # 첫 줄만 사용
+        t = t.splitlines()[0].strip()
+
+        return t or "오늘의 이야기"
+
+    def _clean_body(self, raw: str) -> str:
+        """
+        일기 본문에서 제목/라벨/오늘의 기분 같은 부분 제거.
+        실제 일기 내용만 남긴다.
+        """
+        if not raw:
+            return ""
+
+        lines = []
+        for line in raw.splitlines():
+            l = line.strip()
+
+            # 완전 빈 줄은 그대로 둠(문단 구분용)
+            if not l:
+                lines.append("")
+                continue
+
+            # 제목/일기 내용/오늘의 기분 라벨 라인은 제거
+            if re.match(r"^(제목|title)\s*[:：]", l, re.IGNORECASE):
+                continue
+            if re.match(r"^\[?일기\s*내용\]?\s*$", l):
+                continue
+            if re.match(r"^오늘의\s*기분\s*[:：]", l):
+                continue
+
+            lines.append(line)
+
+        body = "\n".join(lines).strip()
+        # 연속 빈 줄 3줄 이상 → 2줄로 축소
+        body = re.sub(r"\n{3,}", "\n\n", body)
+        return body
+
+    # =========================
     # 일기 추출 / 생성
     # =========================
     def extract_diary(self, diary_text: Optional[str] = None) -> Dict[str, str]:
         """
         일기 텍스트에서 제목과 [일기 내용] 구간을 분리.
-        diary_text가 없으면 self.diary_content를 사용.
+        - diary_text가 없으면 self.diary_content를 사용.
+        - 지원 포맷:
+          1) "제목: ~~~" + "[일기 내용]" 블록
+          2) 첫 줄 = 제목, 그 아래 줄부터 = 본문
         """
         text = (diary_text or self.diary_content or "").strip()
+        if not text:
+            return {"title": "오늘의 이야기", "body": ""}
 
-        # 제목
         title = "오늘의 이야기"
+        body_raw = text
+
+        # 1) "제목: ..." 형식 먼저 시도
         m = re.search(r"제목\s*:\s*(.+)", text)
         if m:
-            title = m.group(1).strip()
+            title = self._clean_title(m.group(1))
+            # '제목: ...' 라인이 있으면 그 라인을 본문에서 제거
+            body_raw = re.sub(r"^.*제목\s*:.+\n?", "", text, count=1, flags=re.MULTILINE)
+        else:
+            # 2) "제목:"이 없으면 첫 번째 non-empty 줄을 제목으로 사용
+            lines = text.splitlines()
+            first_idx = None
+            for idx, line in enumerate(lines):
+                if line.strip():
+                    first_idx = idx
+                    break
 
-        # 본문
-        parts = re.split(r"\[일기\s*내용\]\s*", text, maxsplit=1)
-        body = parts[1].strip() if len(parts) == 2 else text
+            if first_idx is not None:
+                title_candidate = lines[first_idx]
+                title = self._clean_title(title_candidate)
+                # 제목 줄 이후를 본문 후보로 사용
+                rest_lines = lines[first_idx + 1 :]
+                body_raw = "\n".join(rest_lines).lstrip("\n")
+
+        # 3) [일기 내용] 블록이 있으면 그 뒤만 사용
+        parts = re.split(r"\[일기\s*내용\]\s*", body_raw, maxsplit=1)
+        if len(parts) == 2:
+            body_raw = parts[1]
+
+        # 4) 본문 정리(라벨 제거 등)
+        body = self._clean_body(body_raw)
 
         return {"title": title, "body": body}
 
@@ -265,13 +350,15 @@ class TextDiaryAssistant:
             f"- {self.slot_kor[k]}: {self.slots.get(k) or '미상'}" for k in self.slot_order
         )
         prompt = (
-            "다음 대화와 정리된 정보를 바탕으로 어린이의 1인칭(나) 시점에서 일기 한 편을 작성하시오."
+            "다음 대화와 정리된 정보를 바탕으로 어린이의 1인칭(나) 시점에서 일기 한 편을 작성하시오. "
             "반말, 간결한 문장, 실제 행동과 감정이 드러나게 작성하시오.\n\n"
             f"<정리된 정보>\n{slot_summary}\n</정리된 정보>\n\n"
             f"<대화 내용>\n{dialogue}\n</대화 내용>\n\n"
             "<일기 형식>\n"
-            "[제목]\n"
-            "[일기 내용]\n"
+            "1) 첫 줄에는 일기 제목만 한 줄로 쓰시오. 예: 신나는 축구 데이!\n"
+            "2) 둘째 줄은 비워 두고, 셋째 줄부터는 일기 내용을 여러 문장으로 쓰시오.\n"
+            "3) '제목:', '[일기 내용]', '오늘의 기분:' 같은 말머리나 설명 문장은 쓰지 마시오.\n"
+            "4) 위 형식에 맞는 순수 일기 텍스트만 출력하고, 다른 설명은 절대 쓰지 마시오.\n"
         )
         try:
             res = self.client.models.generate_content(model=MODEL_NAME, contents=prompt)
@@ -280,12 +367,11 @@ class TextDiaryAssistant:
             self.diary_content = text
             return self.diary_content
         except Exception as e:
-            # 실패 시에도 최소 형식 보장
             inferred = self._infer_mood_from_text(dialogue)
             fallback = (
-                "제목: 오늘 있었던 일\n"
-                "일기 내용: 오늘의 일기 내용."
-                f"오늘의 기분: {inferred}\n\n"
+                "오늘 있었던 일\n"
+                "\n"
+                "오늘의 일기 내용."
             )
             self.diary_content = fallback + f"\n\n(오류 메모: {e})"
             return self.diary_content
@@ -295,30 +381,44 @@ class TextDiaryAssistant:
     # =========================
     def translate_to_english(self, text_ko: str) -> str:
         """
-        한국어 일기 본문을 자연스러운 영어 문장으로 번역.
-        - 이모지/이상한 기호 제거는 LLM 프롬프트로 유도
-        - 이미지 생성기 입력을 고려해 간결하고 묘사 중심으로 번역
+        한국어 일기 본문을 자연스러운 영어 '한 문장'으로 번역.
+        - 핵심 정보(누가/어디서/무엇을/언제, 감정)를 최대한 포함
+        - 이모지/불필요한 설명/줄바꿈 제거
+        - 최종적으로 영어 한 문장만 반환
         """
         if not text_ko or not text_ko.strip():
             return ""
 
         ask = (
-            "Translate the following Korean diary passage into concise, natural English for an image generation prompt. "
-            "Keep concrete details (who/where/what/when) and actions. Avoid emojis, honorifics, or extra commentary. "
-            "Return only the English sentences.\n\n"
+            "Read the following Korean diary passage and express it as exactly ONE concise, natural English sentence. "
+            "Include key details about who, where, what, when, and the child's feelings if possible. "
+            "Avoid emojis, line breaks, bullet points, or extra commentary. "
+            "Output only one English sentence.\n\n"
             f'Korean:\n"""{text_ko.strip()}"""'
         )
         try:
             res = self.client.models.generate_content(model=MODEL_NAME, contents=ask)
-            return (res.text or "").strip()
+            out = (res.text or "").strip()
+
+            # 1) 줄바꿈/여러 공백을 공백 하나로 정리
+            out = re.sub(r"\s+", " ", out)
+
+            # 2) 혹시 여러 문장이 오면, 첫 번째 문장만 잘라내기
+            #    - 마침표/느낌표/물음표 중 제일 먼저 나오는 문장부호까지를 한 문장으로 간주
+            m = re.search(r"([^.?!]*[.?!])", out)
+            if m:
+                return m.group(1).strip()
+
+            # 문장부호가 없으면 전체를 한 문장으로 취급
+            return out
         except Exception:
-            # 실패 시 원문을 그대로 반환
+            # 실패 시 원문을 그대로 반환 (영어 한 문장이 아니어도, 최소 동작 보장)
             return text_ko.strip()
 
     def diary_body_english(self, diary_text: Optional[str] = None) -> str:
         """
         (1) 일기에서 [일기 내용]만 추출하고
-        (2) 한국어이면 영어로 번역해서 반환.
+        (2) 한국어이면 영어 한 문장으로 번역해서 반환.
             - 이미 영어/비한글이면 그대로 반환.
         """
         parts = self.extract_diary(diary_text)
@@ -331,6 +431,7 @@ class TextDiaryAssistant:
             # 이미 영어(또는 비한글)라고 보고 그대로 반환
             return body
 
+        # 여기서 translate_to_english가 이미 '한 문장'으로 강제함
         return (self.translate_to_english(body) or "").strip()
 
     # ===================
