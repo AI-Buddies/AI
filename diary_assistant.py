@@ -270,7 +270,7 @@ class TextDiaryAssistant:
             f"<정리된 정보>\n{slot_summary}\n</정리된 정보>\n\n"
             f"<대화 내용>\n{dialogue}\n</대화 내용>\n\n"
             "<일기 형식>\n"
-            "제목: [제목]\n"
+            "[제목]\n"
             "[일기 내용]\n"
         )
         try:
@@ -284,9 +284,8 @@ class TextDiaryAssistant:
             inferred = self._infer_mood_from_text(dialogue)
             fallback = (
                 "제목: 오늘 있었던 일\n"
+                "일기 내용: 오늘의 일기 내용."
                 f"오늘의 기분: {inferred}\n\n"
-                "[일기 내용]\n"
-                "오늘의 일기 내용."
             )
             self.diary_content = fallback + f"\n\n(오류 메모: {e})"
             return self.diary_content
