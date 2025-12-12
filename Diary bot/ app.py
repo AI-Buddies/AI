@@ -198,6 +198,7 @@ def comment(req: CommentReq):
         if req.content is not None:
             setattr(sess, "diary_content", req.content)
         out = sess.generate_comment()
+        sess.reset()
         return ok({"comment": out})
     except Exception as e:
         return err(f"코멘트 생성 중 오류: {e}")
