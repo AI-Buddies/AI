@@ -417,21 +417,28 @@ class TextDiaryAssistant:
 
     def diary_body_english(self, diary_text: Optional[str] = None) -> str:
         """
-        (1) 일기에서 [일기 내용]만 추출하고
-        (2) 한국어이면 영어 한 문장으로 번역해서 반환.
-            - 이미 영어/비한글이면 그대로 반환.
+        (1) diary_text가 들어오면 그것을 '이미 잘려 있는 일기 본문'으로 간주해서 그대로 사용
+        (2) diary_text가 없으면 self.diary_content에서 [일기 내용]만 추출
+        (3) 한국어이면 영어 한 문장으로 번역해서 반환,
+            이미 영어/비한글이면 그대로 반환.
         """
-        parts = self.extract_diary(diary_text)
-        body = (parts.get("body") or "").strip()
+        # 1) 클라이언트가 diaryText를 넘긴 경우 → 그대로 본문으로 사용
+        if diary_text is not None and diary_text.strip():
+            body = diary_text.strip()
+        else:
+            # 2) 세션에 저장된 전체 일기 텍스트에서 본문 추출
+            parts = self.extract_diary()
+            body = (parts.get("body") or "").strip()
+
         if not body:
             return ""
 
-        # 한글 여부 체크: 한글 코드 범위 있으면 번역 대상
+        # 3) 한글 여부 체크: 한글 코드 범위 있으면 번역 대상
         if not re.search(r"[\uac00-\ud7a3]", body):
             # 이미 영어(또는 비한글)라고 보고 그대로 반환
             return body
 
-        # 여기서 translate_to_english가 이미 '한 문장'으로 강제함
+        # 4) 여기서 translate_to_english가 이미 '한 문장'으로 강제함
         return (self.translate_to_english(body) or "").strip()
 
     # ===================
