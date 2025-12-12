@@ -448,9 +448,9 @@ class TextDiaryAssistant:
         ask = (
             "다음 내용을 읽고 아이의 주요 감정을 반드시 아래 5가지 중 하나만으로 고르시오.\n"
             "내용은 대화이거나 완성된 일기일 수 있습니다.\n"
-            "허용값: happy, amazed, sad, angry, anxiety\n"
+            "허용값: HAPPY, AMAZED, SAD, ANGRY, ANXIETY\n"
             "다른 단어, 동의어, 영어 단어, 설명 문장은 쓰지 마시오.\n"
-            '출력 형식은 JSON 한 줄만 허용합니다. 예: {"mood":"happy"}\n\n'
+            '출력 형식은 JSON 한 줄만 허용합니다. 예: {"mood":"HAPPY"}\n\n'
             f"{text}"
         )
         try:
@@ -465,7 +465,7 @@ class TextDiaryAssistant:
         except Exception:
             pass
         # 기본값
-        return "happy"
+        return "HAPPY"
 
     def infer_mood_from_diary(self, diary_text: Optional[str] = None) -> str:
         """
