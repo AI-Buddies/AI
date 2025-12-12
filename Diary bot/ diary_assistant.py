@@ -1,4 +1,5 @@
 # diary_assistant.py
+# -*- coding: utf-8 -*-
 import os, re, json, random
 from typing import List, Optional, Dict, Tuple
 from google import genai
