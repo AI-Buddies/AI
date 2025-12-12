@@ -433,12 +433,7 @@ class TextDiaryAssistant:
         if not body:
             return ""
 
-        # 3) 한글 여부 체크: 한글 코드 범위 있으면 번역 대상
-        if not re.search(r"[\uac00-\ud7a3]", body):
-            # 이미 영어(또는 비한글)라고 보고 그대로 반환
-            return body
-
-        # 4) 여기서 translate_to_english가 이미 '한 문장'으로 강제함
+        # 3) 여기서 translate_to_english가 이미 '한 문장'으로 강제함
         return (self.translate_to_english(body) or "").strip()
 
     # ===================
