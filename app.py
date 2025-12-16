@@ -151,13 +151,11 @@ def diary(req: DiaryReq):
         return err(f"일기 생성 중 오류: {e}")
 
 
-@app.post("/diary/english")
+@app.post("/diary/english", response_class=PlainTextResponse)
 def diary_english(req: DiaryEnglishReq):
     """
-    - diaryText가 오면 그 본문을 영어로 번역하여 JSON으로 반환
-    - 없으면 현재 세션의 최신 일기를 생성(or 재사용)한 뒤,
-      그 일기 본문을 영어로 변환하여 반환
-    - 공통 응답 포맷(ok/err)을 사용
+    - diaryText가 오면 그 본문을 영어로 번역해서 '영어 한 문장' plain text로 반환
+    - 없으면 세션의 최신 일기 본문을 영어로 변환해서 plain text로 반환
     """
     try:
         sess = get_session(req.userId)
@@ -166,22 +164,25 @@ def diary_english(req: DiaryEnglishReq):
         if req.diaryText and req.diaryText.strip():
             prompt_en = (sess.diary_body_english(req.diaryText) or "").strip()
         else:
-            # 대화가 하나도 없으면 생성 불가
             if not getattr(sess, "chat_history", None):
-                return err("No conversation yet. Call /chat first.", code="400")
+                return PlainTextResponse(
+                    content="No conversation yet. Call /chat first.",
+                    status_code=400
+                )
 
-            # 최신 일기 확보 후 영어 본문 생성
             _ = sess.generate_diary_text()
             prompt_en = (sess.diary_body_english() or "").strip()
 
         if not prompt_en:
-            return err("Empty diary body.", code="400")
+            return PlainTextResponse(content="Empty diary body.", status_code=400)
 
-        # 공통 응답 포맷으로 영어 한 문장을 data에 담아서 반환
-        return ok({"Diary": prompt_en})
+        return PlainTextResponse(content=prompt_en, status_code=200)
 
     except Exception as e:
-        return err(f"Failed to build English diary body: {e}")
+        return PlainTextResponse(
+            content=f"Failed to build English diary body: {e}",
+            status_code=500
+        )
 
 
 @app.post("/comment")
