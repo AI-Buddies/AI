@@ -9,7 +9,20 @@ from pydantic import BaseModel
 #from diffusers import AutoPipelineForText2Image
 from diffusers import AutoPipelineForText2Image, DEISMultistepScheduler
 
+from threading import Lock
+PIPE_LOCK = Lock()
+
+
 import boto3
+import logging, sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("img-server")
+
 
 # 환경 변수
 #MODEL_ID = "sd-legacy/stable-diffusion-v1-5"
@@ -32,7 +45,8 @@ LORA_FILES = {
 }
 
 # 프롬포트
-POSITIVE_PROMPT = ("cute, storybook, illustration, soft lighting, kids, storybook illustration, cute and wholesome, clean line art, simple shapes, paper texture, soft lighting, clear focal point, child-friendly, flat 2D shading, gentle background, high readability")
+POSITIVE_PROMPT = ("cute, storybook, illustration, soft lighting, kids, clean line art, simple shapes, paper texture, clear focal point, child-friendly, flat 2D shading")
+
 NEGATIVE_PROMPT = ("minimal background, nsfw, violence, photorealistic,duplicate objects, extra eyes, (worst quality:2), (low quality:2), lowres, ((monochrome)), ((grayscale)), skin spots, acnes, skin blemishes, age spot, glans, extra fingers, fewer fingers, ((watermark:2)), (white letters:1), (multi nipples), bad anatomy, bad hands, text, error, missing fingers, missing arms, missing legs, extra digit, fewer digits, cropped, worst quality, jpeg artifacts, signature, username, bad feet, blurry, poorly drawn hands, poorly drawn face, mutation, deformed, extra limbs, extra arms, extra legs, malformed limbs, fused fingers, too many fingers, long neck, cross-eyed, mutated hands, polar lowres, bad body, bad proportions, gross proportions, wrong feet bottom render, abdominal stretch, briefs, knickers, kecks, thong, {{fused fingers}}, {{bad body}}, bad-picture-chill-75v, ng_deepnegative_v1_75t, EasyNegative, bad proportion body to legs, wrong toes, extra toes, missing toes, weird toes, 2 body, 2 pussy, 2 upper, 2 lower, 2 head, 3 hand, 3 feet, extra long leg, super long leg, mirrored image, mirrored noise, single eye")
 
 #Trigger word와 LoRA 특화 키워드
@@ -98,7 +112,7 @@ def _generate_and_upload(diary_text: str, lora_choice: str = DEFAULT_LORA) -> di
     pipe.set_adapters([lora_choice])
 
     # 2) 스크립트 강조
-    emphasized_diary = f"{diary_text}, {diary_text}"
+    emphasized_diary = f"{diary_text}"
 
     base_prompt = emphasized_diary
 
@@ -113,12 +127,16 @@ def _generate_and_upload(diary_text: str, lora_choice: str = DEFAULT_LORA) -> di
 
     neg_prompt = NEGATIVE_PROMPT
 
+
     text_lower = diary_text.lower()
     if ("book" not in text_lower):
         neg_prompt = (
             neg_prompt
-            + ", book, books, reading a book, holding a book, open book, child holding a book"
-        ) # 맥락 없는 책 이미지 생성 방지
+            + ", (book:1.6), (books:1.6), (storybook:1.4), (picture book:1.4), "
+            "(reading a book:1.8), (holding a book:1.8), (open book:1.6), "
+            "(child holding a book:1.8), library, bookshelf, pages, text on page"
+        )
+
     
     # 4) 파일명/키 생성
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -126,22 +144,28 @@ def _generate_and_upload(diary_text: str, lora_choice: str = DEFAULT_LORA) -> di
     local_name = f"{lora_choice}_mydiaryimage_{ts}.png"
     s3_key = f"{S3_PREFIX}{lora_choice}/{ts}_{h}.png"
 
-    # 5) 이미지 생성 (프롬프트는 위에서 만든 full_prompt 사용)
-    with torch.inference_mode():
-        image = pipe(
-            prompt=full_prompt,
-            negative_prompt=neg_prompt,
-            height=IMAGE_SIZE,
-            width=IMAGE_SIZE,
-            guidance_scale=7.5,
-            num_inference_steps=50,
-        ).images[0]
+    # 5) 이미지 생성 (동시 요청 방지 / 프롬프트는 위에서 만든 full_prompt 사용)
+    with PIPE_LOCK:
+        pipe.scheduler = DEISMultistepScheduler.from_config(pipe.scheduler.config)
+
+        with torch.inference_mode():
+            image = pipe(
+                prompt=full_prompt,
+                negative_prompt=neg_prompt,
+                height=IMAGE_SIZE,
+                width=IMAGE_SIZE,
+                guidance_scale=7.5,
+                num_inference_steps=50,
+            ).images[0]
+
 
     # 6) PNG 바이트화
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     buf.seek(0)
     png_bytes = buf.read()
+
+    logger.info("FINAL full_prompt=%r", full_prompt)
     try:
         os.makedirs("./outputs", exist_ok=True)
         image.save(os.path.join("./outputs", local_name))
